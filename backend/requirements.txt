@@ -1,0 +1,19 @@
+flask>=2.3.0
+flask-cors>=4.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+pytesseract>=0.3.10
+easyocr>=1.7.1
+paddlepaddle>=2.5.0
+paddleocr>=2.7.0
+requests>=2.31.0
+tenacity>=8.2.3
+reportlab>=4.0.4
+pdf2image>=1.16.3
+path>=16.9.0
+torch>=2.1.0
+torchvision>=0.16.0
+onnxruntime>=1.16.0
+scipy>=1.11.0
+# htr_pipeline installed locally from HTRPipeline/
