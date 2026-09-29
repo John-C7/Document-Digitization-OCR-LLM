@@ -1,9 +1,10 @@
 """
 app.py
 Handwritten Document Digitization System - RESTful API Server.
-Coordinates image preprocessing, multi-model OCR ensemble (Custom CRNN-CTC,
-EasyOCR, PaddleOCR, Tesseract), Gemini LLM contextual enhancement,
-and multi-page PDF generation.
+Coordinates advanced multi-stage image preprocessing, multi-model OCR ensemble
+(Custom CRNN-CTC, EasyOCR, PaddleOCR, Tesseract), Gemini LLM contextual enhancement
+(Gemini 2.5/2.0/1.5 Flash & Pro with multi-modal visual grounding),
+ROVER dynamic alignment, benchmarking, and multi-format document export.
 """
 
 import os
@@ -42,6 +43,7 @@ CORS(app)
 # Storage directories
 UPLOAD_FOLDER = BASE_DIR / "backend" / "uploads"
 OUTPUT_FOLDER = BASE_DIR / "backend" / "outputs"
+DATA_FOLDER = BASE_DIR / "data"
 UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 
@@ -50,19 +52,18 @@ OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 # -------------------------------------------------------------
 # 1. Custom CRNN-CTC from htr_pipeline
 custom_ocr_available = False
+prefix_tree = None
 try:
     from htr_pipeline import read_page, DetectorConfig, LineClusteringConfig, ReaderConfig, PrefixTree
 
-    # Attempt to load dictionary for word beam search
     dict_paths = [
-        BASE_DIR / "data" / "words_alpha.txt",
+        DATA_FOLDER / "words_alpha.txt",
         HTR_DIR / "data" / "words_alpha.txt"
     ]
-    prefix_tree = None
     for dp in dict_paths:
         if dp.exists():
-            with open(dp) as f:
-                words = [w.strip().upper() for w in f.readlines()]
+            with open(dp, "r", encoding="utf-8", errors="ignore") as f:
+                words = [w.strip().upper() for w in f.readlines() if w.strip()]
             prefix_tree = PrefixTree(words)
             break
     custom_ocr_available = True
@@ -164,12 +165,12 @@ def run_paddleocr_runner(bgr_img):
         return ""
 
 
-def run_tesseract_runner(gray_img):
+def run_tesseract_runner(binary_img):
     """Executes Tesseract OCR text extraction."""
     if not tesseract_available:
         return ""
     try:
-        return pytesseract.image_to_string(gray_img).strip()
+        return pytesseract.image_to_string(binary_img).strip()
     except Exception as ex:
         logger.error(f"Error in Tesseract: {ex}")
         return ""
@@ -181,8 +182,10 @@ def draw_bounding_boxes(image_bgr, boxes):
     for b in boxes:
         x, y, w, h = b["x"], b["y"], b["w"], b["h"]
         cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 165, 255), 2)
-        cv2.putText(annotated, b["text"], (x, max(12, y - 4)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 60, 0), 1, cv2.LINE_AA)
+        cv2.putText(
+            annotated, b["text"], (x, max(14, y - 4)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 60, 0), 1, cv2.LINE_AA
+        )
     return annotated
 
 
@@ -199,8 +202,36 @@ def health_check():
             "easyocr": easyocr_reader is not None,
             "paddleocr": paddleocr_model is not None,
             "tesseract": tesseract_available
-        }
+        },
+        "supported_llm_models": [
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro"
+        ],
+        "presets": ["standard", "historical", "form", "tabular"]
     })
+
+
+@app.route("/api/samples", methods=["GET"])
+def list_samples():
+    """Returns list of bundled test handwritten images with descriptions."""
+    samples = [
+        {"id": "sample_1.png", "title": "Sample 1: Handwritten Letter / Note", "filename": "sample_1.png"},
+        {"id": "sample_2.png", "title": "Sample 2: Degraded Historical Document", "filename": "sample_2.png"},
+        {"id": "sample_2_line.png", "title": "Sample 3: Single Line Cursive Crop", "filename": "sample_2_line.png"}
+    ]
+    return jsonify({"success": True, "samples": samples})
+
+
+@app.route("/api/samples/<filename>", methods=["GET"])
+def get_sample_file(filename):
+    """Serves a bundled sample image file."""
+    for folder in [DATA_FOLDER, HTR_DIR / "data"]:
+        target = folder / filename
+        if target.exists():
+            return send_file(target, mimetype="image/png")
+    return jsonify({"error": "Sample not found"}), 404
 
 
 @app.route("/upload", methods=["POST"])
@@ -209,25 +240,46 @@ def process_document():
     """
     Main document digitization pipeline endpoint.
     Processes uploaded handwritten document through:
-      1. Preprocessing (Grayscale, Gaussian Blur, Otsu)
-      2. Multi-Model OCR (CRNN-CTC, EasyOCR, PaddleOCR, Tesseract in parallel)
-      3. ROVER Weighted Voting Ensemble
-      4. Gemini LLM Contextual Enhancement
-      5. Bounding Box Detection Visualization
-      6. Multi-page PDF Generation
-      7. Benchmark Evaluation (if ground truth supplied)
+      1. Advanced multi-stage preprocessing (deskew, shadow removal, CLAHE, binarization)
+      2. Multi-Model OCR (CRNN-CTC, EasyOCR, PaddleOCR, Tesseract) in parallel
+      3. ROVER Dynamic Sequence Alignment Consensus
+      4. Contextual & Multi-modal Gemini LLM Enhancement
+      5. Multi-format Document Generation (PDF, Markdown, JSON, TXT)
+      6. Benchmarking & Text Diff computation
     """
     if "image" not in request.files and "file" not in request.files:
-        return jsonify({"success": False, "error": "No file uploaded under 'image' or 'file'"}), 400
-
-    uploaded_file = request.files.get("image") or request.files.get("file")
-    if uploaded_file.filename == "":
-        return jsonify({"success": False, "error": "Uploaded filename is empty"}), 400
+        # Check if sample_name was passed
+        sample_name = request.form.get("sample_name")
+        if sample_name:
+            sample_path = DATA_FOLDER / sample_name
+            if not sample_path.exists():
+                sample_path = HTR_DIR / "data" / sample_name
+            if not sample_path.exists():
+                return jsonify({"success": False, "error": f"Sample {sample_name} not found"}), 404
+            with open(sample_path, "rb") as f:
+                img_bytes = f.read()
+            bgr_img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+            gray_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2GRAY)
+            doc_title = Path(sample_name).stem
+        else:
+            return jsonify({"success": False, "error": "No file uploaded under 'image' or 'file'"}), 400
+    else:
+        uploaded_file = request.files.get("image") or request.files.get("file")
+        if uploaded_file.filename == "":
+            return jsonify({"success": False, "error": "Uploaded filename is empty"}), 400
+        bgr_img, gray_img = load_image(uploaded_file)
+        doc_title = Path(uploaded_file.filename).stem
 
     # User options
     enable_llm = request.form.get("enable_llm", "true").lower() in ("true", "1", "yes")
     ground_truth = request.form.get("ground_truth", "").strip()
     gemini_key = request.form.get("gemini_api_key", "").strip() or None
+    llm_model = request.form.get("model_name", "gemini-2.5-flash").strip()
+    processing_mode = request.form.get("mode", "standard").strip()
+    apply_deskew = request.form.get("apply_deskew", "true").lower() in ("true", "1", "yes")
+    apply_shadow_removal = request.form.get("apply_shadow_removal", "true").lower() in ("true", "1", "yes")
+    binarization_method = request.form.get("binarization_method", "otsu").strip()
+    vision_assisted = request.form.get("vision_assisted", "false").lower() in ("true", "1", "yes")
 
     weights = DEFAULT_WEIGHTS.copy()
     raw_weights = request.form.get("weights")
@@ -239,17 +291,23 @@ def process_document():
             logger.warning(f"Could not parse custom weights: {e}")
 
     try:
-        # Load and preprocess image
-        bgr_img, gray_img = load_image(uploaded_file)
-        prep_data = preprocess_for_ocr(gray_img)
+        # 1. Advanced Multi-stage Preprocessing
+        prep_data = preprocess_for_ocr(
+            gray_img,
+            apply_deskew=apply_deskew,
+            apply_shadow_removal=apply_shadow_removal,
+            binarization_method=binarization_method
+        )
+        processed_binary = prep_data["binary"]
+        processed_gray = prep_data["enhanced_gray"]
 
-        # Run models in parallel using ThreadPoolExecutor
+        # 2. Parallel OCR Model Inference
         boxes = []
         with ThreadPoolExecutor(max_workers=4) as executor:
-            future_custom = executor.submit(run_custom_crnn, gray_img)
+            future_custom = executor.submit(run_custom_crnn, processed_gray)
             future_easy = executor.submit(run_easyocr_runner, bgr_img)
             future_paddle = executor.submit(run_paddleocr_runner, bgr_img)
-            future_tess = executor.submit(run_tesseract_runner, prep_data["binary"])
+            future_tess = executor.submit(run_tesseract_runner, processed_binary)
 
             custom_text, boxes = future_custom.result()
             easy_text = future_easy.result()
@@ -263,39 +321,81 @@ def process_document():
             "Tesseract": tess_text
         }
 
-        # Weighted Voting Consensus (ROVER)
-        ensemble_text, confidence_score = weighted_voting_ensemble(
+        # 3. ROVER Dynamic Sequence Alignment Consensus
+        ensemble_text, confidence_score, ensemble_meta = weighted_voting_ensemble(
             ocr_outputs,
             model_weights=weights,
             reference_model="Custom CRNN-CTC"
         )
 
-        # Gemini LLM Contextual Enhancement
+        # 4. Contextual Gemini LLM Enhancement
         enhanced_text = None
         llm_status = None
-        if enable_llm:
-            llm_res = enhance_with_gemini(ensemble_text, api_key=gemini_key)
+        diff_data = []
+        model_used = None
+
+        if enable_llm and ensemble_text:
+            image_b64 = prep_data["stages"]["original"] if vision_assisted else None
+            llm_res = enhance_with_gemini(
+                ensemble_text,
+                api_key=gemini_key,
+                model_name=llm_model,
+                mode=processing_mode,
+                image_base64=image_b64
+            )
             enhanced_text = llm_res["enhanced_text"]
-            llm_status = llm_res["error"]
+            llm_status = llm_res.get("error")
+            diff_data = llm_res.get("diff", [])
+            model_used = llm_res.get("model_used")
 
         final_text = enhanced_text if (enable_llm and enhanced_text) else ensemble_text
 
-        # Bounding box detection visualization
+        # 5. Bounding Box Detection Visualization
         annotated_bgr = draw_bounding_boxes(bgr_img, boxes)
         annotated_b64 = image_to_base64(annotated_bgr)
 
-        # PDF Generation
+        # 6. Multi-format Document Export
         doc_id = str(uuid.uuid4())[:8]
-        pdf_filename = f"digitized_{doc_id}.pdf"
+        base_name = f"digitized_{doc_id}"
+
+        # PDF Export
+        pdf_filename = f"{base_name}.pdf"
         pdf_path = OUTPUT_FOLDER / pdf_filename
         generate_digitized_pdf(
             text=final_text,
             output_path=str(pdf_path),
-            doc_title=Path(uploaded_file.filename).stem,
-            confidence_score=confidence_score
+            doc_title=doc_title,
+            confidence_score=confidence_score,
+            model_info=f"ROVER 4-Model Ensemble + {model_used or 'Gemini LLM'}"
         )
 
-        # Benchmarks
+        # Plain Text Export
+        txt_filename = f"{base_name}.txt"
+        with open(OUTPUT_FOLDER / txt_filename, "w", encoding="utf-8") as f:
+            f.write(final_text)
+
+        # Markdown Export
+        md_filename = f"{base_name}.md"
+        with open(OUTPUT_FOLDER / md_filename, "w", encoding="utf-8") as f:
+            f.write(f"# {doc_title}\n\n**Confidence**: {confidence_score}%\n\n---\n\n{final_text}\n")
+
+        # JSON Export
+        json_filename = f"{base_name}.json"
+        export_payload = {
+            "title": doc_title,
+            "confidence_score": confidence_score,
+            "final_text": final_text,
+            "ensemble_text": ensemble_text,
+            "llm_enhanced_text": enhanced_text,
+            "ocr_outputs": ocr_outputs,
+            "model_weights": weights,
+            "diff": diff_data,
+            "deskew_angle": prep_data["deskew_angle"]
+        }
+        with open(OUTPUT_FOLDER / json_filename, "w", encoding="utf-8") as f:
+            json.dump(export_payload, f, indent=2)
+
+        # 7. Benchmarks
         benchmarks = {}
         if ground_truth:
             benchmarks = compute_benchmarks(ground_truth, ocr_outputs, ensemble_text, enhanced_text)
@@ -303,29 +403,49 @@ def process_document():
         return jsonify({
             "success": True,
             "preprocessed_image": prep_data["base64_preview"],
+            "preprocessing_stages": prep_data["stages"],
+            "deskew_angle": prep_data["deskew_angle"],
             "visualized_image": annotated_b64,
             "ocr_outputs": ocr_outputs,
             "ensemble_text": ensemble_text,
+            "ensemble_meta": ensemble_meta,
             "confidence_score": confidence_score,
             "llm_enhanced_text": enhanced_text,
             "final_text": final_text,
+            "diff": diff_data,
+            "llm_model_used": model_used,
             "pdf_url": f"/api/download/{pdf_filename}",
+            "txt_url": f"/api/download/{txt_filename}",
+            "md_url": f"/api/download/{md_filename}",
+            "json_url": f"/api/download/{json_filename}",
             "benchmarks": benchmarks,
             "detected_boxes_count": len(boxes),
             "llm_error": llm_status
         })
 
     except Exception as ex:
-        logger.exception("Processing failed:")
+        logger.exception("Processing pipeline failed:")
         return jsonify({"success": False, "error": str(ex)}), 500
 
 
 @app.route("/api/download/<filename>", methods=["GET"])
-def download_pdf(filename):
-    """Serves the generated PDF file for download."""
+def download_artifact(filename):
+    """Serves the generated export artifacts (PDF, TXT, MD, JSON)."""
     target_path = OUTPUT_FOLDER / filename
     if target_path.exists():
-        return send_file(target_path, as_attachment=True, download_name=filename)
+        mimetypes = {
+            ".pdf": "application/pdf",
+            ".txt": "text/plain",
+            ".md": "text/markdown",
+            ".json": "application/json"
+        }
+        ext = target_path.suffix.lower()
+        return send_file(
+            target_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype=mimetypes.get(ext, "application/octet-stream")
+        )
     return jsonify({"error": "File not found"}), 404
 
 

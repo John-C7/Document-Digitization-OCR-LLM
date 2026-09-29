@@ -19,45 +19,58 @@
 
 ---
 
-## 🧠 System Architecture
+## 🧠 System Architecture (v2.0)
 
 ```
 Handwritten Image Input
         │
         ▼
-  ┌─────────────┐
-  │ Preprocessor│  — Grayscale → Gaussian Blur → Otsu Thresholding
-  └─────────────┘
+  ┌────────────────────────────────────────────────────────┐
+  │         Advanced Preprocessor Pipeline                 │
+  │  • Auto-Deskewing (Orientation Contour Rect ±45°)      │
+  │  • Background Illumination Normalization (Shadows)     │
+  │  • Edge-Preserving Bilateral Smoothing                 │
+  │  • Contrast Limited Adaptive Hist Equalization (CLAHE) │
+  │  • Multi-mode Binarization (Otsu / Adaptive Sauvola)   │
+  └────────────────────────────────────────────────────────┘
         │
         ▼
-  ┌──────────────────────────────────────┐
-  │       Ensemble OCR Layer             │
-  │  ┌────────────┐  ┌────────────────┐  │
-  │  │Custom CRNN │  │    EasyOCR     │  │
-  │  │   -CTC     │  │   (weight 1.0) │  │
-  │  │(weight 1.2)│  └────────────────┘  │
-  │  └────────────┘  ┌────────────────┐  │
-  │  ┌────────────┐  │   Tesseract    │  │
-  │  │ PaddleOCR  │  │   (weight 0.8) │  │
-  │  │(weight 1.1)│  └────────────────┘  │
-  │  └────────────┘                      │
-  └──────────────────────────────────────┘
-        │
-        ▼  ROVER — Weighted Character Voting
-  ┌─────────────────┐
-  │  Ensemble Text  │
-  └─────────────────┘
+  ┌────────────────────────────────────────────────────────┐
+  │             Ensemble OCR Layer (Parallel)              │
+  │  ┌────────────────────────┐  ┌──────────────────────┐  │
+  │  │    Custom CRNN-CTC     │  │       EasyOCR        │  │
+  │  │(IAM dataset, wt: 1.25) │  │     (weight 1.0)     │  │
+  │  └────────────────────────┘  └──────────────────────┘  │
+  │  ┌────────────────────────┐  ┌──────────────────────┐  │
+  │  │       PaddleOCR        │  │      Tesseract       │  │
+  │  │     (weight 1.15)      │  │    (weight 0.85)     │  │
+  │  └────────────────────────┘  └──────────────────────┘  │
+  └────────────────────────────────────────────────────────┘
         │
         ▼
-  ┌─────────────────┐
-  │ Gemini LLM Post-│  — Contextual Reconstruction & Spell Correction
-  │   Processing    │
-  └─────────────────┘
+  ┌────────────────────────────────────────────────────────┐
+  │       ROVER Dynamic Sequence Alignment Engine          │
+  │  • Needleman-Wunsch Global Word Sequence Alignment     │
+  │  • Word Transition Network (WTN) Slot Voting           │
+  │  • 370k Lexicon Assistance & Character Resolution      │
+  └────────────────────────────────────────────────────────┘
+        │
+        ▼  Consensus Hypotheses + Image Base64
+  ┌────────────────────────────────────────────────────────┐
+  │      Gemini 2.5 Multimodal Restoration Engine          │
+  │  • Vision-Language Grounding on Raw Handwriting Strokes│
+  │  • Domain Presets: Standard, Historical, Forms, Tables │
+  │  • Word-Level Diff Generator & Spell Correction        │
+  └────────────────────────────────────────────────────────┘
         │
         ▼
-  ┌─────────────────┐
-  │  Final Output   │  — Text + Annotated Image + Downloadable PDF
-  └─────────────────┘
+  ┌────────────────────────────────────────────────────────┐
+  │         Multi-Format Structured Export                 │
+  │  • Downloadable Multi-Page PDF Report (ReportLab)      │
+  │  • Clean Markdown (.md) with Form/Table Layouts        │
+  │  • Structured JSON (.json) with Diff & Word Metadata   │
+  │  • Plain Text (.txt) & Interactive Studio Diff View    │
+  └────────────────────────────────────────────────────────┘
 ```
 
 ---
